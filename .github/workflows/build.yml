@@ -10,39 +10,56 @@ on:
 concurrency: 
   group: ${{ github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
-
+# 在 jobs 部分添加以下 freebsd_build 任务（注意缩进层级）
 jobs:
+  # ... 保持原有 linux/macos/windows 任务不变 ...
 
   freebsd_build:
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            artifact: subconverter_freebsd64
-            os: [self-hosted, freebsd, AMD64]
-    runs-on: ${{ matrix.os }}
-    name: FreeBSD ${{ matrix.arch }} Build
+    # 必须使用自托管运行器（需提前配置好 FreeBSD 机器）
+    runs-on: [self-hosted, freebsd, amd64]
+    name: FreeBSD amd64 Build
     steps:
-    - name: Checkout base
+    - name: Checkout code
       uses: actions/checkout@v4
-    - name: Add commit id into version
+      
+    - name: Inject commit hash
       if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-      run: SHA=$(git rev-parse --short HEAD) && sed -i '' 's/\(v[0-9]\.[0-9]\.[0-9]\)/\1-'"$SHA"'/' src/version.h
+      run: |
+        SHA=$(git rev-parse --short HEAD)
+        sed -i '' "s/\(v[0-9]\+\.[0-9]\+\.[0-9]\+\)/\1-$SHA/" src/version.h
+
     - name: Install dependencies
-      run: pkg install -y gmake gcc cmake pcre2
-    - name: Build
-      run: gmake
-    - name: Upload
+      run: |
+        pkg install -y \
+        gmake \
+        cmake \
+        pcre2 \
+        rapidjson \
+        libsodium \
+        yaml-cpp \
+        curl \
+        openssl
+
+    - name: Build with gmake
+      run: |
+        gmake -j$(sysctl -n hw.ncpu)
+        strip subconverter/subconverter
+
+    - name: Archive artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.artifact }}
-        path: subconverter/
-    - name: Package Release
+        name: subconverter_freebsd_amd64
+        path: |
+          subconverter/subconverter
+          subconverter/base/*
+          subconverter/*.ini
+
+    - name: Create release package
       if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') }}
-      run: tar czf ${{ matrix.artifact }}.tar.gz subconverter
-    - name: Draft Release
+      run: tar czvf subconverter_freebsd_amd64.tar.gz -C subconverter .
+
+    - name: Publish release
       if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') }}
       uses: softprops/action-gh-release@v2
       with:
-        files: ${{ matrix.artifact }}.tar.gz
-        draft: true
+        files: subconverter_freebsd_amd64.tar.gz
